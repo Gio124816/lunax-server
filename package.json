@@ -15,9 +15,9 @@
     "express-session": "^1.17.3",
     "better-sqlite3": "^9.4.3",
     "uuid": "^9.0.0",
-    "node-cron": "^3.0.3"
+    "node-cron": "^3.0.3",
     "helmet": "^7.1.0",
-    "express-rate-limit": "^7.2.0",
+    "express-rate-limit": "^7.2.0"
   },
   "engines": { "node": ">=18.0.0" }
 }
