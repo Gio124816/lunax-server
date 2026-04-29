@@ -1,6 +1,6 @@
 # Luna X — Backend API
 
-The server that powers Luna X for every user. Handles all Meta API calls, AI generation, post scheduling, and OAuth — so users just click "Connect Meta" and everything works. Gio
+The server that powers Luna X for every user. Handles all Meta API calls, AI generation, post scheduling, and OAuth — so users just click "Connect Meta" and everything works. 
 
 ---
 
