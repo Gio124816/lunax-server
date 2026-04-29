@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
 const db = require('../db/database');
-const { sendEmail } = require('../utils/email');
+const { sendEmail } = require('./email');
 
 // ── GOOGLE OAUTH ──────────────────────────────────────────
 // Setup: console.cloud.google.com → APIs → OAuth consent screen
