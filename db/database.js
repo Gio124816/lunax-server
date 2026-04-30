@@ -149,7 +149,7 @@ db.exec(`
     provider   TEXT NOT NULL,
     created_at INTEGER NOT NULL
   );
-)`).run();
+');
 
  db.prepare(`CREATE TABLE IF NOT EXISTS feedback (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
