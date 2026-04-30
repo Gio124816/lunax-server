@@ -13,7 +13,6 @@ const postsRoutes = require('./routes/posts');
 const { startScheduler } = require('./routes/scheduler');
 const { requireAuth } = require('./routes/auth');
 const feedbackRoutes = require('./routes/feedback');
-app.use('/feedback', feedbackRoutes);
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -88,6 +87,7 @@ app.use('/billing', billingRoutes);
 app.use('/meta', requireAuth, metaRoutes);
 app.use('/ai', requireAuth, aiRoutes);
 app.use('/posts', requireAuth, postsRoutes);
+app.use('/feedback', feedbackRoutes);
 
 // — START SCHEDULER —————————————————
 startScheduler();
