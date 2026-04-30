@@ -8,7 +8,7 @@ const { sendEmail } = require('./email');
 function createSession(userId) {
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
   return jwt.sign(
-    { id: userId, email: user.email },
+    { id: userId, email: user.email, name: user.name },
     process.env.JWT_SECRET,
     { expiresIn: '30d' }
   );
