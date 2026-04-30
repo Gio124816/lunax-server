@@ -150,6 +150,16 @@ db.exec(`
     created_at INTEGER NOT NULL
   );
 
+  db.prepare(`CREATE TABLE IF NOT EXISTS feedback (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT,
+  email TEXT,
+  type TEXT NOT NULL,
+  rating INTEGER,
+  message TEXT,
+  created_at INTEGER NOT NULL
+)`).run();
+
   -- Indexes for performance
   CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
   CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
