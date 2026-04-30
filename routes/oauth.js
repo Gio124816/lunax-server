@@ -3,6 +3,7 @@ const router = express.Router();
 const crypto = require('crypto');
 const db = require('../db/database');
 const { sendEmail } = require('./email');
+const { createSession } = require('./auth');
 
 // ── GOOGLE OAUTH ──────────────────────────────────────────
 // Setup: console.cloud.google.com → APIs → OAuth consent screen
