@@ -12,6 +12,8 @@ const aiRoutes = require('./routes/ai');
 const postsRoutes = require('./routes/posts');
 const { startScheduler } = require('./routes/scheduler');
 const { requireAuth } = require('./routes/auth');
+const feedbackRoutes = require('./routes/feedback');
+app.use('/feedback', feedbackRoutes);
 
 const app = express();
 const PORT = process.env.PORT || 3001;
