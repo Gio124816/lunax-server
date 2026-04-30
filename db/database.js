@@ -149,8 +149,9 @@ db.exec(`
     provider   TEXT NOT NULL,
     created_at INTEGER NOT NULL
   );
+)`).run();
 
-  db.prepare(`CREATE TABLE IF NOT EXISTS feedback (
+ db.prepare(`CREATE TABLE IF NOT EXISTS feedback (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id TEXT,
   email TEXT,
@@ -159,6 +160,10 @@ db.exec(`
   message TEXT,
   created_at INTEGER NOT NULL
 )`).run();
+
+db.prepare(`
+  -- Indexes for performance
+  CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 
   -- Indexes for performance
   CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
