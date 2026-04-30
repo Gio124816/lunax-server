@@ -269,7 +269,6 @@ router.get('/meta/callback', async (req, res) => {
 
 // ── SHARED: find or create OAuth user ────────────────────
 async function findOrCreateOAuthUser({ provider, providerId, email, name, avatar, emailVerified, accessToken }) {
-  const { createSession, sanitizeUser } = require('./auth');
 
   // Check if this OAuth account already linked
   let user = db.prepare('SELECT u.* FROM users u JOIN oauth_accounts oa ON u.id = oa.user_id WHERE oa.provider = ? AND oa.provider_id = ?').get(provider, providerId);
