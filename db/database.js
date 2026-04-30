@@ -161,7 +161,7 @@ db.exec(`
   created_at INTEGER NOT NULL
 )`).run();
 
-db.prepare(`
+db.exec(`
   -- Indexes for performance
   CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 
