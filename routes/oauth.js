@@ -1,9 +1,19 @@
 const express = require('express');
+const jwt = require('jsonwebtoken');
 const router = express.Router();
 const crypto = require('crypto');
 const db = require('../db/database');
 const { sendEmail } = require('./email');
-const { createSession } = require('./auth');
+
+function createSession(userId) {
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+  return jwt.sign(
+    { id: userId, email: user.email },
+    process.env.JWT_SECRET,
+    { expiresIn: '30d' }
+  );
+}
+
 
 // ── GOOGLE OAUTH ──────────────────────────────────────────
 // Setup: console.cloud.google.com → APIs → OAuth consent screen
@@ -310,8 +320,8 @@ async function findOrCreateOAuthUser({ provider, providerId, email, name, avatar
     ON CONFLICT(provider, provider_id) DO UPDATE SET access_token = excluded.access_token, updated_at = excluded.updated_at
   `).run(user.id, provider, providerId, accessToken || null, Date.now());
 
-  const session = createSession(user.id);
-  return { ...session, isNew };
+  const token = createSession(user.id);
+return { token, isNew };
 }
 
 // ── ADD OAUTH TABLES TO SCHEMA ────────────────────────────
