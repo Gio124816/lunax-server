@@ -36,6 +36,12 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Session-Token']
 }));
 
+app.get('/config', (req, res) => {
+  res.json({
+    metaAppId: process.env.META_APP_ID
+  });
+});
+
 // — STRIPE WEBHOOK — must be raw body BEFORE json middleware —
 app.use('/billing/webhook', express.raw({ type: 'application/json' }));
 
