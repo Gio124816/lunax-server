@@ -230,6 +230,41 @@ router.get('/meta', (req, res) => {
   res.redirect(`https://www.facebook.com/v18.0/dialog/oauth?${params}`);
 });
 
+// In /meta/callback, replace the findOrCreateOAuthUser call with:
+let session;
+
+// Check if there's an existing logged-in user via state param
+const existingToken = req.query.state; // we'll pass the JWT as state
+let existingUserId = null;
+if (existingToken) {
+  try {
+    const decoded = jwt.verify(existingToken, process.env.JWT_SECRET);
+    existingUserId = decoded.id;
+  } catch(e) {}
+}
+
+if (existingUserId) {
+  // Link Meta to existing account — update meta_access_token on user
+  db.prepare('UPDATE users SET meta_access_token = ?, updated_at = ? WHERE id = ?')
+    .run(longToken, Date.now(), existingUserId);
+  // Also upsert oauth_accounts
+  db.prepare(`INSERT INTO oauth_accounts (user_id, provider, provider_id, access_token, updated_at)
+    VALUES (?, 'meta', ?, ?, ?)
+    ON CONFLICT(provider, provider_id) DO UPDATE SET access_token = excluded.access_token, updated_at = excluded.updated_at, user_id = excluded.user_id`)
+    .run(existingUserId, profile.id, longToken, Date.now());
+  const sessionToken = createSession(existingUserId);
+  session = { token: sessionToken, isNew: false };
+} else {
+  session = await findOrCreateOAuthUser({
+    provider: 'meta',
+    providerId: profile.id,
+    email: profile.email,
+    name: profile.name,
+    emailVerified: true,
+    accessToken: longToken
+  });
+}
+
 router.get('/meta/callback', async (req, res) => {
   const { code, state, error } = req.query;
   if(error || !code) return res.redirect(`${process.env.FRONTEND_URL}/login?error=meta_denied`);
