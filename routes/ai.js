@@ -20,19 +20,64 @@ async function callClaude(messages, systemPrompt, maxTokens = 1000) {
 }
 
 // — POST /ai/caption —
+// Handles both direct caption requests AND natural language commands like
+// "post this video today at 12pm on Instagram and Facebook with a good caption"
 router.post('/caption', async (req, res) => {
   try {
     const { command, brand, tone, platforms, mediaContext } = req.body;
+
+    const now = new Date();
+    const nowStr = now.toLocaleString('en-US', {
+      timeZone: 'America/Denver',
+      weekday: 'long', year: 'numeric', month: 'long',
+      day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true
+    });
+
     const text = await callClaude(
-      [{ role: 'user', content: `Command: ${command}\n${mediaContext ? `Media: ${mediaContext}` : ''}` }],
-      `You are a social media manager for ${brand || 'a professional business'}.
+      [{ role: 'user', content: `User command: "${command}"\n${mediaContext ? `Media context: ${mediaContext}` : ''}` }],
+      `You are a smart social media assistant for ${brand || 'a professional business'}.
+Current date/time: ${nowStr} (Mountain Time).
 Tone: ${tone || 'professional but friendly'}.
-Target platforms: ${(platforms || ['Instagram', 'Facebook']).join(', ')}.
-Write an engaging caption. Return JSON: { caption, hashtags: string[], scheduledLabel, reasoning }
-No markdown, just JSON.`,
-      800
+Default platforms if not specified: ${(platforms || ['Instagram', 'Facebook']).join(', ')}.
+
+The user may be giving a NATURAL LANGUAGE COMMAND like:
+- "post this video today at 12pm on Instagram and Facebook and write a caption"
+- "schedule this for tomorrow morning with a good caption"
+- "can you post this at 3pm and come up with something good"
+
+OR they may be providing the actual caption text directly.
+
+Your job:
+1. Detect if it's a command or direct caption text
+2. If it's a command: extract the scheduling intent, platforms, and generate an appropriate caption based on the media context
+3. If it's direct caption text: use it as-is (cleaned up)
+4. Parse any time references relative to current time (e.g. "today at 12pm", "tomorrow morning", "in 2 hours")
+5. Generate relevant hashtags
+6. Write separate captions if multiple platforms specified with different character limits
+
+Return ONLY valid JSON, no markdown:
+{
+  "caption": "the main caption text",
+  "captionFacebook": "Facebook-specific caption if requested (can be longer, more conversational)",
+  "captionInstagram": "Instagram-specific caption if requested (engaging, emoji-friendly)",
+  "hashtags": ["tag1", "tag2"],
+  "scheduledLabel": "human readable time like 'Today at 12:00 PM'",
+  "scheduledISO": "ISO 8601 datetime string if a specific time was mentioned, otherwise null",
+  "platforms": ["Instagram", "Facebook"],
+  "reasoning": "brief explanation of what you understood and did",
+  "isCommand": true or false
+}`,
+      1000
     );
-    res.json(JSON.parse(text.replace(/```json|```/g, '').trim()));
+
+    const parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
+
+    // If scheduledISO came back, convert to timestamp for the frontend
+    if (parsed.scheduledISO) {
+      parsed.scheduledTimestamp = new Date(parsed.scheduledISO).getTime();
+    }
+
+    res.json(parsed);
   } catch (e) {
     res.status(400).json({ error: e.message });
   }

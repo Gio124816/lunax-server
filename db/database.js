@@ -204,6 +204,22 @@ db.prepare(`CREATE TABLE IF NOT EXISTS invite_uses (
   used_at     INTEGER NOT NULL
 )`).run();
 
+// Referral system tables
+db.prepare(`CREATE TABLE IF NOT EXISTS referrals (
+  id          TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  code        TEXT UNIQUE NOT NULL,
+  created_at  INTEGER NOT NULL
+)`).run();
+
+db.prepare(`CREATE TABLE IF NOT EXISTS referral_uses (
+  id          TEXT PRIMARY KEY,
+  referral_id TEXT NOT NULL REFERENCES referrals(id) ON DELETE CASCADE,
+  email       TEXT,
+  joined      INTEGER DEFAULT 0,
+  created_at  INTEGER NOT NULL
+)`).run();
+
 // ── MAINTENANCE ───────────────────────────────────────────
 
 function cleanExpiredSessions() {

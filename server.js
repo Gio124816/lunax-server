@@ -98,6 +98,7 @@ app.use('/posts', requireAuth, postsRoutes);
 app.use('/feedback', feedbackRoutes);
 app.use('/notifications', notificationRoutes);
 app.use('/invite', inviteRoutes);
+app.use('/referral', inviteRoutes); // referral sub-routes are in invite.js
 
 // — START SCHEDULER —————————————————
 startScheduler();

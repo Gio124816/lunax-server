@@ -89,4 +89,132 @@ function generateCode() {
   return Array.from({ length: 8 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
 }
 
+// ── POST /invite/bulk ── (admin only)
+// Generate codes in bulk and return GHL-ready CSV
+router.post('/bulk', (req, res) => {
+  const { secret, count, label, maxUses, expiresInDays } = req.body;
+  if (secret !== process.env.ADMIN_SECRET) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  const total = Math.min(parseInt(count) || 100, 5000);
+  const uses = parseInt(maxUses) || 3;
+  const expiresAt = expiresInDays ? Date.now() + expiresInDays * 86400000 : null;
+  const baseUrl = process.env.FRONTEND_URL || 'https://lunaxmedia.com';
+
+  const codes = [];
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO invite_codes (id, code, label, max_uses, uses, expires_at, created_at)
+    VALUES (?, ?, ?, ?, 0, ?, ?)
+  `);
+
+  const insertMany = db.transaction(() => {
+    for (let i = 0; i < total; i++) {
+      const code = generateCode();
+      const id = uuidv4();
+      insert.run(id, code, label || 'bulk', uses, expiresAt, Date.now());
+      codes.push(code);
+    }
+  });
+
+  insertMany();
+
+  // Return CSV formatted for GHL custom fields
+  // GHL expects: columns you can map to contact fields
+  const csv = [
+    'code,invite_link,max_uses',
+    ...codes.map(c => `${c},${baseUrl}?code=${c},${uses}`)
+  ].join('\n');
+
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', `attachment; filename="lunax-invite-codes-${Date.now()}.csv"`);
+  res.send(csv);
+});
+
+
+// ── GET /invite/referral/me ── 
+// Get current user's referral code and stats
+router.get('/referral/me', requireAuth, (req, res) => {
+  try {
+    // Get or create referral code for this user
+    let ref = db.prepare('SELECT * FROM referrals WHERE user_id = ?').get(req.user.id);
+    if (!ref) {
+      const code = 'REF' + generateCode().slice(0, 6);
+      db.prepare('INSERT INTO referrals (id, user_id, code, created_at) VALUES (?, ?, ?, ?)')
+        .run(uuidv4(), req.user.id, code, Date.now());
+      ref = db.prepare('SELECT * FROM referrals WHERE user_id = ?').get(req.user.id);
+    }
+    // Count how many people used this code and how many actually joined
+    const invited = db.prepare('SELECT COUNT(*) as c FROM referral_uses WHERE referral_id = ?').get(ref.id)?.c || 0;
+    const joined = db.prepare('SELECT COUNT(*) as c FROM referral_uses WHERE referral_id = ? AND joined = 1').get(ref.id)?.c || 0;
+    res.json({ code: ref.code, invited, joined, freeMonths: Math.floor(joined / 3) });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── POST /invite/referral/track ──
+// Called when someone lands on the site with ?ref=CODE
+router.post('/referral/track', (req, res) => {
+  try {
+    const { code, email } = req.body;
+    if (!code) return res.json({ ok: true });
+    const ref = db.prepare('SELECT * FROM referrals WHERE code = ?').get(code.toUpperCase());
+    if (!ref) return res.json({ ok: true, valid: false });
+    // Record the click (don't count as joined yet)
+    db.prepare('INSERT OR IGNORE INTO referral_uses (id, referral_id, email, joined, created_at) VALUES (?, ?, ?, 0, ?)')
+      .run(uuidv4(), ref.id, email || '', Date.now());
+    res.json({ ok: true, valid: true });
+  } catch(e) {
+    res.json({ ok: true });
+  }
+});
+
+// ── POST /invite/referral/join ──
+// Called after successful Google OAuth when a ref code was present
+router.post('/referral/join', (req, res) => {
+  try {
+    const { code, email } = req.body;
+    if (!code || !email) return res.json({ ok: true });
+    const ref = db.prepare('SELECT * FROM referrals WHERE code = ?').get(code.toUpperCase());
+    if (!ref) return res.json({ ok: true });
+    // Mark as joined (upsert)
+    const existing = db.prepare('SELECT * FROM referral_uses WHERE referral_id = ? AND email = ?').get(ref.id, email);
+    if (existing) {
+      db.prepare('UPDATE referral_uses SET joined = 1 WHERE id = ?').run(existing.id);
+    } else {
+      db.prepare('INSERT INTO referral_uses (id, referral_id, email, joined, created_at) VALUES (?, ?, ?, 1, ?)')
+        .run(uuidv4(), ref.id, email, Date.now());
+    }
+    // Add in-app notification to referrer
+    const joined = db.prepare('SELECT COUNT(*) as c FROM referral_uses WHERE referral_id = ? AND joined = 1').get(ref.id)?.c || 0;
+    console.log(`[Referral] ${email} joined via code ${code} — referrer has ${joined} total joins`);
+    res.json({ ok: true, totalJoined: joined });
+  } catch(e) {
+    res.json({ ok: true });
+  }
+});
+
+// ── GET /invite/referral/leaderboard ── (admin)
+router.get('/referral/leaderboard', (req, res) => {
+  const secret = req.headers['x-admin-secret'] || req.query.secret;
+  if (secret !== process.env.ADMIN_SECRET) return res.status(403).json({ error: 'Unauthorized' });
+  try {
+    const board = db.prepare(`
+      SELECT r.code, u.name, u.email,
+             COUNT(ru.id) as invited,
+             SUM(ru.joined) as joined
+      FROM referrals r
+      JOIN users u ON r.user_id = u.id
+      LEFT JOIN referral_uses ru ON ru.referral_id = r.id
+      GROUP BY r.id
+      ORDER BY joined DESC, invited DESC
+      LIMIT 50
+    `).all();
+    res.json({ leaderboard: board });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;
