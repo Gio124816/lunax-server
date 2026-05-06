@@ -35,6 +35,28 @@ router.get('/accounts', requireAuth, (req, res) => {
   res.json({ accounts });
 });
 
+// — GET /meta/accounts —
+router.get('/accounts', requireAuth, (req, res) => {
+  const accounts = db.prepare('SELECT * FROM user_accounts WHERE user_id = ?').all(req.user.id);
+  res.json({ accounts });
+});
+
+// — GET /meta/pages —
+router.get('/pages', requireAuth, async (req, res) => {
+  try {
+    const token = req.user.meta_access_token;
+    if(!token) return res.status(400).json({ error: 'No Meta token' });
+    const data = await metaGet('/me/accounts', token, {
+      fields: 'id,name,access_token,instagram_business_account{id,name,username}'
+    });
+    res.json(data);
+  } catch(e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// — GET /meta/pages/:pageId/leadgen_forms —
+
 // ── GET /meta/pages/:pageId/leadgen_forms ──
 // Pull real lead forms from a Facebook Page
 router.get('/pages/:pageId/leadgen_forms', requireAuth, async (req, res) => {
