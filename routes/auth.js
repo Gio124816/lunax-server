@@ -95,7 +95,9 @@ router.post('/login', async (req, res) => {
 // ── ME ──────────────────────────────────────────────────
 router.get('/me', requireAuth, (req, res) => {
   try {
-    const user = db.prepare('SELECT id, email, name, meta_access_token FROM users WHERE id = ?').get(req.user.id);
+    const user = db.prepare(
+  'SELECT id, email, name, business_name, created_at, meta_access_token FROM users WHERE id = ?'
+).get(req.user.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
     const subscription = db.prepare('SELECT * FROM subscriptions WHERE user_id = ?').get(req.user.id);
     res.json({ ...user, subscription: subscription || null });
