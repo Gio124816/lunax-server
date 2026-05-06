@@ -174,6 +174,12 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(user_id);
 `);
 
+// — MIGRATIONS —
+try {
+  db.prepare(`ALTER TABLE users ADD COLUMN meta_access_token TEXT`).run();
+  console.log('Migration: added meta_access_token column');
+} catch (e) { /* column already exists */ }
+
 // ── MAINTENANCE ───────────────────────────────────────────
 
 // Clean expired sessions (run periodically)
