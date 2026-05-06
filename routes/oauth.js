@@ -269,28 +269,6 @@ router.get('/meta/callback', async (req, res) => {
   }
 });
 
-    const llTokens = await llRes.json();
-    const longToken = llTokens.access_token || tokens.access_token;
-
-    const profileRes = await fetch(`https://graph.facebook.com/me?fields=id,name,email&access_token=${longToken}`);
-    const profile = await profileRes.json();
-
-    const session = await findOrCreateOAuthUser({
-      provider: 'meta',
-      providerId: profile.id,
-      email: profile.email,
-      name: profile.name,
-      emailVerified: true,
-      accessToken: longToken
-    });
-
-    res.redirect(`${process.env.FRONTEND_URL}/lunax.html?session=${session.token}&welcome=${session.isNew ? '1' : '0'}`);
-  } catch(err) {
-    console.error('Meta OAuth error:', err);
-    res.redirect(`${process.env.FRONTEND_URL}/login?error=meta_failed`);
-  }
-});
-
 // ── SHARED: find or create OAuth user ────────────────────
 async function findOrCreateOAuthUser({ provider, providerId, email, name, avatar, emailVerified, accessToken }) {
 
