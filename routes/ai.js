@@ -1,0 +1,363 @@
+const express = require('express');
+const { requireAuth } = require('../middleware/auth');
+const db = require('../db/database');
+
+const router = express.Router();
+
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+const MODEL = 'claude-sonnet-4-6';
+
+async function callClaude(messages, systemPrompt, maxTokens = 1000) {
+  const Anthropic = require('@anthropic-ai/sdk');
+  const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+  const response = await client.messages.create({
+    model: MODEL,
+    max_tokens: maxTokens,
+    system: systemPrompt,
+    messages,
+  });
+  return response.content.map(b => b.text || '').join('');
+}
+
+// Robust JSON extraction from AI responses. The model sometimes adds
+// preamble ("Sure, here you go:"), postamble ("Hope this helps!"), or
+// commentary after closing brace. JSON.parse(text.replace(/```json|```/g))
+// fails on any of those with "Unexpected non-whitespace character at
+// position N". This walker finds the first balanced JSON object or array
+// in the response and parses only that substring. Tracks string literals
+// and escape characters so braces/brackets inside strings don't confuse it.
+function extractJSON(rawText) {
+  if (typeof rawText !== 'string') throw new Error('AI returned non-string');
+  // Strip markdown code fences anywhere they appear.
+  let text = rawText.replace(/```json|```/gi, '').trim();
+  // Find the first opening brace or bracket.
+  let start = -1;
+  let openChar = null;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '{' || text[i] === '[') { start = i; openChar = text[i]; break; }
+  }
+  if (start === -1) throw new Error('AI response contained no JSON object or array');
+  const closeChar = openChar === '{' ? '}' : ']';
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  let end = -1;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (escape) { escape = false; continue; }
+    if (ch === '\\' && inString) { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === openChar) depth++;
+    else if (ch === closeChar) {
+      depth--;
+      if (depth === 0) { end = i; break; }
+    }
+  }
+  if (end === -1) throw new Error('AI response had unbalanced JSON');
+  const slice = text.slice(start, end + 1);
+  return JSON.parse(slice);
+}
+
+// — POST /ai/caption —
+// Handles both direct caption requests AND natural language commands like
+// "post this video today at 12pm on Instagram and Facebook with a good caption"
+router.post('/caption', async (req, res) => {
+  try {
+    const { command, brand, tone, location, platforms, mediaContext, videoTranscript, images } = req.body;
+
+    const now = new Date();
+    const nowStr = now.toLocaleString('en-US', {
+      timeZone: 'America/Denver',
+      weekday: 'long', year: 'numeric', month: 'long',
+      day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true
+    });
+
+    const locationContext = location 
+      ? `\nBUSINESS LOCATION: ${location} — naturally weave the city/neighborhood into captions when relevant (e.g. "serving Denver homeowners", "right here in Aurora", "Colorado's best"). Don't force it into every caption but make it feel local and real. IMPORTANT: if the user mentions a specific location in their command, always use that instead.`
+      : `\nLOCATION: Not saved in settings — but if the user mentions any location in their command (e.g. "Denver", "the Aurora job", "in Lakewood"), pick it up and use it naturally in the caption.`;
+
+    // Build user message — if images are attached (extracted video frames or a
+    // photo), put them in front of the text so the model can SEE the content
+    // and caption what's actually shown (not just the filename/brand profile).
+    const textPart = `User command: "${command}"\n${mediaContext ? `Media context: ${mediaContext}` : ''}${videoTranscript ? `\nVideo transcript (spoken words from the video — use this to write a caption based on actual content): "${videoTranscript.substring(0, 1000)}"` : ''}${Array.isArray(images) && images.length ? `\n\nIMPORTANT: Image frames from this exact piece of media are attached. Look at them and caption what is ACTUALLY shown (the real subject, setting, products, people, mood). If what you see does NOT match the business description, caption what you SEE — the visuals are the source of truth.` : ''}`;
+
+    let userContent;
+    if (Array.isArray(images) && images.length) {
+      const blocks = [];
+      for (const img of images.slice(0, 6)) {
+        if (img && img.media_type && img.data) {
+          blocks.push({ type: 'image', source: { type: 'base64', media_type: img.media_type, data: img.data } });
+        }
+      }
+      blocks.push({ type: 'text', text: textPart });
+      userContent = blocks;
+    } else {
+      userContent = textPart;
+    }
+
+    const text = await callClaude(
+      [{ role: 'user', content: userContent }],
+      `You are a smart social media assistant for ${brand || 'a professional business'}.
+Current date/time: ${nowStr} (Mountain Time).
+Tone: ${tone || 'professional but friendly'}.
+Default platforms if not specified: ${(platforms || ['Instagram', 'Facebook']).join(', ')}.${locationContext}
+
+The user may be giving a NATURAL LANGUAGE COMMAND like:
+- "post this video today at 12pm on Instagram and Facebook and write a caption"
+- "schedule this for tomorrow morning with a good caption"
+- "can you post this at 3pm and come up with something good"
+
+OR they may be providing the actual caption text directly.
+
+Your job:
+1. Detect if it's a command or direct caption text
+2. If it's a command: extract the scheduling intent, platforms, and generate an appropriate caption based on the media context
+3. If video transcript is provided, base the caption on the actual spoken content — make it feel authentic to what's in the video
+4. If it's direct caption text: use it as-is (cleaned up)
+5. Parse time references with EXACT PRECISION — "1:30pm" means 13:30:00, "1:40pm" means 13:40:00. NEVER round to nearest hour. Include exact minutes always.
+6. Hashtag rules (IMPORTANT):
+   - DEFAULT: generate hashtags for the business type and location set in the brand profile above.
+   - EXCEPTION: if the visual content clearly does NOT match the brand profile (e.g. brand is "landscaping company" but the video shows a music performance, fashion shoot, food, travel, etc.), generate hashtags that match the ACTUAL VISUAL CONTENT instead. Don't force landscaping tags on a music video.
+   - When you detect a mismatch, set "contentMismatch": true and explain briefly in "reasoning". The user can see this and decide whether to switch brand profiles before publishing.
+7. Write separate captions for each platform — Facebook longer/conversational, Instagram punchy with emojis. Same rule: caption should match the actual content shown, not force the brand narrative onto unrelated visuals.
+8. CRITICAL — voice transcripts may contain ambient/unrelated speech (the user thinking out loud, side conversations, reading something else aloud). Treat ONLY the parts that look like instructions ("post this at...", "schedule for...", "use the X folder", "come up with a caption", platform names, times, dates) as the command. Any rambling, personal asides, or off-topic speech in the command field should be IGNORED — do not let it leak into the caption. The caption must reflect the MEDIA (frames/transcript of the actual video content), not the user's spoken aside.
+
+Return ONLY valid JSON, no markdown:
+{
+  "caption": "the main caption text",
+  "captionFacebook": "Facebook-specific caption (longer, more conversational, no hashtags needed)",
+  "captionInstagram": "Instagram-specific caption (punchy, emoji-rich, under 150 words)",
+  "hashtags": ["tag1", "tag2", "tag3", "tag4", "tag5", "tag6", "tag7", "tag8"],
+  "scheduledLabel": "human readable time like 'Today at 1:30 PM'",
+  "scheduledTime": "ISO 8601 with exact time e.g. 2026-05-06T13:30:00 — MUST include exact minutes, never round",
+  "scheduleNow": false,
+  "platforms": ["Instagram", "Facebook"],
+  "isShort": false,
+  "contentMismatch": false,
+  "reasoning": "one sentence: what time you set and why, and what caption angle you chose. If contentMismatch=true, say what brand the visuals seem to fit instead.",
+  "isCommand": true or false
+}`,
+      1000
+    );
+
+    const parsed = extractJSON(text);
+
+    // Map scheduledISO -> scheduledTime for frontend compatibility (legacy field)
+    if (parsed.scheduledISO && !parsed.scheduledTime) {
+      parsed.scheduledTime = parsed.scheduledISO;
+    }
+    if (parsed.scheduledTime) {
+      parsed.scheduledTimestamp = new Date(parsed.scheduledTime).getTime();
+    }
+    // Ensure scheduledLabel exists
+    if (parsed.scheduledTime && !parsed.scheduledLabel) {
+      parsed.scheduledLabel = new Date(parsed.scheduledTime).toLocaleString('en-US', {
+        timeZone: 'America/Denver',
+        weekday: 'short', month: 'short', day: 'numeric',
+        hour: 'numeric', minute: '2-digit', hour12: true
+      });
+    }
+    // Always trust the platforms the frontend sent (user selection + voice detection)
+    // Claude may suggest platforms but user's explicit selection wins
+    if (platforms && platforms.length > 0) {
+      parsed.platforms = platforms;
+    }
+    // scheduleNow default
+    if (parsed.scheduleNow === undefined) parsed.scheduleNow = false;
+    // isShort default
+    if (parsed.isShort === undefined) parsed.isShort = false;
+
+    res.json(parsed);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// — POST /ai/bulk-captions —
+router.post('/bulk-captions', async (req, res) => {
+  try {
+    const { files, brand, tone } = req.body;
+    const fileList = files.map((f, i) => `${i + 1}. ${f.name} (${f.type})`).join('\n');
+    const text = await callClaude(
+      [{ role: 'user', content: `Generate unique captions for these ${files.length} files:\n${fileList}` }],
+      `You are a social media manager for ${brand || 'a professional business'}.
+Tone: ${tone || 'professional but friendly'}.
+Create a unique, platform-optimized caption for each file.
+Return a JSON array with one object per file: [{ index, caption, hashtags: string[], scheduledLabel }]
+No markdown, just JSON array.`,
+      1500
+    );
+    res.json(extractJSON(text));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// — POST /ai/edit-plan —
+router.post('/edit-plan', async (req, res) => {
+  try {
+    const { projectName, clips, script, style, vibes, music, brand } = req.body;
+    const clipList = clips.map((c, i) => `Clip ${i + 1}: "${c.name}" (${c.type})`).join(', ');
+    const text = await callClaude(
+      [{ role: 'user', content: `Project: ${projectName}\nClips: ${clipList}\nScript: ${script || 'None provided'}\nStyle: ${style}\nVibes: ${vibes}` }],
+      `You are a professional video editor for ${brand || 'a business'}.
+Create a shot-by-shot edit plan.
+Return ONLY valid JSON:
+{
+  "projectTitle": string,
+  "totalDuration": string,
+  "formats": string[],
+  "generatedScript": string,
+  "shots": [{ "shotNumber": number, "clipName": string, "startTime": string, "endTime": string, "duration": string, "description": string }],
+  "overlays": [{ "time": string, "text": string, "style": string, "duration": string }],
+  "musicNotes": string,
+  "editorNotes": string
+}`,
+      1500
+    );
+    res.json(extractJSON(text));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// — POST /ai/ads-insights —
+router.post('/ads-insights', async (req, res) => {
+  try {
+    const { campaigns, adsets, creatives, brand } = req.body;
+    const summary = campaigns.map(c => {
+      const ins = ((c.insights || {}).data || [])[0] || {};
+      return `${c.name} (${c.status}): spend $${parseFloat(ins.spend || 0).toFixed(0)}, CTR ${parseFloat(ins.ctr || 0).toFixed(2)}%`;
+    }).join('; ');
+    const text = await callClaude(
+      [{ role: 'user', content: `Campaign data: ${summary}` }],
+      `You are a Meta Ads analyst for ${brand || 'a local service business'}.
+Give 2-3 sharp actionable insights in one paragraph under 60 words.
+Focus on what to do next – scale, pause, test, or optimize. Be direct.`,
+      200
+    );
+    res.json({ insights: text });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// — POST /ai/ads-feedback —
+router.post('/ads-feedback', async (req, res) => {
+  try {
+    const { feedback, campaigns, adsets, creatives, brand } = req.body;
+    const campSummary = campaigns.map(c => {
+      const ins = ((c.insights || {}).data || [])[0] || {};
+      return `• ${c.name} (${c.status}): spend $${parseFloat(ins.spend || 0).toFixed(0)}, CTR ${parseFloat(ins.ctr || 0).toFixed(2)}%`;
+    }).join('\n');
+    const text = await callClaude(
+      [{ role: 'user', content: `Campaigns:\n${campSummary}\n\nClient feedback: "${feedback}"` }],
+      `You are a Meta Ads expert for local service businesses (landscaping, home services, contractors).
+Business: ${brand || 'local service business'}
+
+Provide:
+1. ROOT CAUSE – specific, not generic
+2. IMMEDIATE FIXES (this week) – 3 specific changes
+3. AUDIENCE FIXES – specific Meta targeting adjustments
+4. CREATIVE FIXES – what ads should say differently
+5. BUDGET RECOMMENDATION – where to shift spend
+
+Be specific. Mention actual Meta targeting options, bid strategies, creative tactics. Max 300 words.`,
+      600
+    );
+    res.json({ diagnosis: text });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// — POST /ai/build-ad —
+router.post('/build-ad', async (req, res) => {
+  try {
+    const { diagnosis, feedback, campaigns, brand } = req.body;
+    const campOptions = campaigns
+      .filter(c => c.status === 'ACTIVE')
+      .map(c => `${c.id}: ${c.name}`)
+      .join('\n') || 'No active campaigns';
+    const text = await callClaude(
+      [{ role: 'user', content: `Diagnosis: ${diagnosis}\nFeedback: ${feedback}\nActive campaigns:\n${campOptions}` }],
+      `You are a Meta Ads expert. Build a complete optimized ad set configuration for ${brand || 'a local service business'}.
+Return ONLY valid JSON:
+{
+  "adSetName": string,
+  "campaignId": string,
+  "campaignName": string,
+  "dailyBudget": number,
+  "bidStrategy": string,
+  "bidAmount": number,
+  "optimizationGoal": string,
+  "targeting": { "age_min": number, "age_max": number, "genders": number[], "geo": string, "interests": string[], "behaviors": string[] },
+  "adCopy": { "headline": string, "primaryText": string, "description": string, "cta": string },
+  "leadFormQuestions": string[],
+  "estimatedResults": string,
+  "whyThisWorks": string
+}`,
+      1000
+    );
+    res.json(extractJSON(text));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// — POST /ai/refine-ad —
+router.post('/refine-ad', async (req, res) => {
+  try {
+    const { command, currentPlan } = req.body;
+    const text = await callClaude(
+      [{ role: 'user', content: `Command: "${command}"\n\nCurrent plan:\n${JSON.stringify(currentPlan, null, 2)}` }],
+      `You are a Meta Ads expert. Apply the user's command to modify the ad plan.
+Return the complete updated plan as ONLY valid JSON in the exact same structure. No markdown.`,
+      1000
+    );
+    res.json(extractJSON(text));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// — POST /ai/prompt —
+// Generic endpoint for all simple one-off AI calls from the frontend.
+// Body: { prompt: string, maxTokens?: number, system?: string, images?: [{media_type, data}] }
+// When images are provided, they're sent as vision content blocks so the model
+// can SEE the media (e.g. video frames) and caption what's actually shown.
+// Returns: { text: string }
+router.post('/prompt', async (req, res) => {
+  try {
+    const { prompt, maxTokens, system, images } = req.body;
+    if (!prompt) return res.status(400).json({ error: 'prompt is required' });
+
+    let content;
+    if (Array.isArray(images) && images.length) {
+      // Vision: image blocks first, then the text prompt. Cap at 6 images and
+      // skip anything malformed so a bad frame can't break the request.
+      const blocks = [];
+      for (const img of images.slice(0, 6)) {
+        if (img && img.media_type && img.data) {
+          blocks.push({
+            type: 'image',
+            source: { type: 'base64', media_type: img.media_type, data: img.data },
+          });
+        }
+      }
+      blocks.push({ type: 'text', text: prompt });
+      content = blocks;
+    } else {
+      content = prompt; // text-only (unchanged behavior)
+    }
+
+    const messages = [{ role: 'user', content }];
+    const text = await callClaude(messages, system || '', maxTokens || 300);
+    res.json({ text });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+module.exports = router;
